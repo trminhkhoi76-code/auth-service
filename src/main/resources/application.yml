@@ -1,0 +1,44 @@
+spring:
+  application:
+    name: auth-service
+  datasource:
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:auth_service}
+    username: ${DB_USERNAME:root}
+    password: ${DB_PASSWORD:}
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:10}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    locations: classpath:db/migration
+  mvc:
+    problemdetails:
+      enabled: true
+
+server:
+  port: ${SERVER_PORT:8080}
+  # Behind the ALB: honour X-Forwarded-* so redirects/links use the client-facing scheme and host
+  forward-headers-strategy: native
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: never
+      # /actuator/health/liveness  -> ECS container health check
+      # /actuator/health/readiness -> ALB target group health check
+      probes:
+        enabled: true
+
+jwt:
+  # No default on purpose: the app refuses to start without a real secret (>= 32 chars).
+  # Locally use the "local" profile or docker compose; on ECS it is injected from SSM.
+  secret: ${JWT_SECRET:}
+  issuer: ${JWT_ISSUER:auth-service}
+  access-token-ttl: ${JWT_ACCESS_TOKEN_TTL:15m}
+  refresh-token-ttl: ${JWT_REFRESH_TOKEN_TTL:7d}

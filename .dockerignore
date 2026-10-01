@@ -1,0 +1,15 @@
+target/
+.git/
+.gitignore
+.idea/
+*.iml
+.vscode/
+docker/
+Dockerfile
+.dockerignore
+*.md
+.mvn/
+mvnw
+mvnw.cmd
+.github/
+infra/

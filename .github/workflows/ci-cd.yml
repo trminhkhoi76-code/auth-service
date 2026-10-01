@@ -1,0 +1,258 @@
+name: CI/CD
+
+# pull_request → test + terraform validate + terraform plan (read-only role)
+# push to main → test + validate → build & push image → terraform apply → verify rollout
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  AWS_REGION: ap-northeast-1
+  AWS_ACCOUNT_ID: "151062089420"
+  PROJECT_NAME: auth-service # ECR repository + IAM role prefix (infra/bootstrap)
+  TF_ENV: dev                # infra/app/env/<TF_ENV>.{tfvars,s3.tfbackend}
+  TF_VERSION: 1.14.8
+  TF_IN_AUTOMATION: "true"
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      # Integration tests start MySQL 8.4 with Testcontainers (Docker is available on ubuntu runners)
+      - name: Build & test
+        run: mvn -B verify
+
+  terraform-validate:
+    name: Terraform fmt & validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Format check
+        run: terraform fmt -check -recursive -diff infra
+
+      - name: Validate
+        run: |
+          for dir in infra/bootstrap infra/app; do
+            terraform -chdir="$dir" init -backend=false -input=false
+            terraform -chdir="$dir" validate
+          done
+
+  terraform-plan:
+    name: Terraform plan (${{ github.event.pull_request.base.ref }})
+    if: github.event_name == 'pull_request'
+    needs: terraform-validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      id-token: write
+      contents: read
+    defaults:
+      run:
+        working-directory: infra/app
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (read-only)
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
+        with:
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/${{ env.PROJECT_NAME }}-github-plan
+          role-duration-seconds: 900
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Terraform init
+        run: terraform init -input=false -backend-config="env/${TF_ENV}.s3.tfbackend"
+
+      # The read-only role cannot write the S3 lock file, hence -lock=false (plan never writes state)
+      - name: Terraform plan
+        run: |
+          # Plan against the image that is currently deployed so only infrastructure changes show up
+          IMAGE_TAG=$(terraform output -raw image_tag 2>/dev/null || echo "not-deployed-yet")
+          terraform plan -input=false -lock=false -no-color \
+            -var-file="env/${TF_ENV}.tfvars" \
+            -var "image_tag=${IMAGE_TAG}" | tee plan.txt
+          {
+            echo "## Terraform plan — ${TF_ENV}"
+            echo '```'
+            grep -E '^\s+[#~+-]|^Plan:|^No changes' plan.txt | tail -c 60000
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build-push:
+    name: Build & push image
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: [test, terraform-validate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
+        with:
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/${{ env.PROJECT_NAME }}-github-deploy
+          role-duration-seconds: 900
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@fa648b43de3d4d023bcb3f89ed6940096949c419 # v2
+
+      # Tags are immutable (git SHA): on a re-run the image already exists, so skip the build
+      - name: Resolve image tag
+        id: meta
+        run: |
+          echo "image_tag=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          if aws ecr describe-images --repository-name "$PROJECT_NAME" --image-ids imageTag="$GITHUB_SHA" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Docker Buildx
+        if: steps.meta.outputs.exists == 'false'
+        uses: docker/setup-buildx-action@v3
+
+      # Platform must match cpu_architecture in infra/app (X86_64)
+      - name: Build and push
+        if: steps.meta.outputs.exists == 'false'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          tags: ${{ steps.login-ecr.outputs.registry }}/${{ env.PROJECT_NAME }}:${{ steps.meta.outputs.image_tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy (terraform apply)
+    needs: build-push
+    runs-on: ubuntu-latest
+    # The very first apply creates the RDS instance (~10-15 min)
+    timeout-minutes: 60
+    concurrency:
+      group: deploy-dev
+      cancel-in-progress: false
+    permissions:
+      id-token: write
+      contents: read
+    defaults:
+      run:
+        working-directory: infra/app
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
+        with:
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/${{ env.PROJECT_NAME }}-github-deploy
+          role-duration-seconds: 3600
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Terraform init
+        run: terraform init -input=false -backend-config="env/${TF_ENV}.s3.tfbackend"
+
+      # The ECS service uses wait_for_steady_state: apply returns once the new tasks are healthy
+      - name: Terraform apply
+        env:
+          IMAGE_TAG: ${{ needs.build-push.outputs.image_tag }}
+        run: |
+          terraform apply -input=false -auto-approve \
+            -var-file="env/${TF_ENV}.tfvars" \
+            -var "image_tag=${IMAGE_TAG}"
+
+      # If the circuit breaker rolled back, the previous task definition is PRIMARY again: fail the run
+      - name: Verify rollout
+        id: verify
+        run: |
+          CLUSTER=$(terraform output -raw ecs_cluster_name)
+          SERVICE=$(terraform output -raw ecs_service_name)
+          EXPECTED_TD=$(terraform output -raw task_definition_arn)
+          APP_URL=$(terraform output -raw app_url)
+          echo "app_url=${APP_URL}" >> "$GITHUB_OUTPUT"
+
+          read -r PRIMARY_TD ROLLOUT_STATE < <(aws ecs describe-services \
+            --cluster "$CLUSTER" --services "$SERVICE" \
+            --query 'services[0].deployments[?status==`PRIMARY`] | [0].[taskDefinition, rolloutState]' \
+            --output text)
+          echo "Primary deployment: ${PRIMARY_TD} (${ROLLOUT_STATE})"
+
+          if [[ "$PRIMARY_TD" != "$EXPECTED_TD" || "$ROLLOUT_STATE" != "COMPLETED" ]]; then
+            echo "::error::Rollout of ${EXPECTED_TD} did not complete (primary=${PRIMARY_TD}, state=${ROLLOUT_STATE})"
+            exit 1
+          fi
+
+          curl -fsS --retry 6 --retry-delay 5 --retry-all-errors "${APP_URL}/actuator/health/readiness"
+          echo
+
+      - name: Deployment summary
+        if: always()
+        env:
+          IMAGE_TAG: ${{ needs.build-push.outputs.image_tag }}
+          APP_URL: ${{ steps.verify.outputs.app_url }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          {
+            echo "## Deployment — ${TF_ENV}"
+            echo ""
+            echo "| Item | Value |"
+            echo "| --- | --- |"
+            echo "| Result | ${JOB_STATUS} |"
+            echo "| Image tag | \`${IMAGE_TAG}\` |"
+            echo "| URL | ${APP_URL:-n/a} |"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,12 @@
+# Local development against docker/docker-compose.yaml (MySQL published on port 3307).
+# Run with: ./mvnw spring-boot:run -Dspring-boot.run.profiles=local
+spring:
+  datasource:
+    url: jdbc:mysql://localhost:3307/auth_service
+    username: root
+    password: changeit
+  jpa:
+    show-sql: true
+
+jwt:
+  secret: local-dev-secret-not-for-production-use-0123456789
