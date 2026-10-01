@@ -13,3 +13,5 @@ db_skip_final_snapshot = true
 
 # ACM certificate ARN to enable HTTPS (strongly recommended: the API carries passwords)
 certificate_arn = ""
+
+enable_execute_command = true
