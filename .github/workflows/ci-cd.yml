@@ -90,7 +90,7 @@ jobs:
       - name: Configure AWS credentials (read-only)
         uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
         with:
-          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/${{ env.PROJECT_NAME }}-github-action
+          role-to-assume: arn:aws:iam::151062089420:role/auth-service-github-action
           role-duration-seconds: 900
           aws-region: ${{ env.AWS_REGION }}
 
@@ -136,7 +136,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
         with:
-          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/${{ env.PROJECT_NAME }}-github-action
+          role-to-assume: arn:aws:iam::151062089420:role/auth-service-github-action
           role-duration-seconds: 900
           aws-region: ${{ env.AWS_REGION }}
 
@@ -194,7 +194,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
         with:
-          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/${{ env.PROJECT_NAME }}-github-action
+          role-to-assume: arn:aws:iam::151062089420:role/auth-service-github-action
           role-duration-seconds: 3600
           aws-region: ${{ env.AWS_REGION }}
 
