@@ -1,6 +1,5 @@
 package com.personal.authservice.config;
 
-import com.personal.authservice.security.JwtAuthenticationFilter;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -15,6 +14,8 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.web.servlet.HandlerExceptionResolver;
+
+import com.personal.authservice.security.JwtAuthenticationFilter;
 
 @Configuration
 @EnableWebSecurity
@@ -64,3 +65,4 @@ public class SecurityConfig {
         return new BCryptPasswordEncoder();
     }
 }
+
