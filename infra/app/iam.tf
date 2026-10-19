@@ -26,7 +26,6 @@ resource "aws_iam_role_policy_attachment" "execution_managed" {
 # SecureStrings use the AWS managed aws/ssm key, which needs no extra kms:Decrypt grant
 data "aws_iam_policy_document" "execution_secrets" {
   statement {
-    sid     = "ReadAppSecrets"
     actions = ["ssm:GetParameters"]
     resources = [
       aws_ssm_parameter.db_password.arn,

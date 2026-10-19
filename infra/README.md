@@ -65,10 +65,7 @@ Push hoặc merge vào `main` sẽ chạy `.github/workflows/ci-cd.yml`:
 1. `test`: `mvn verify` (integration test chạy với MySQL 8.4 qua Testcontainers)
 2. `terraform-validate`: `fmt -check` + `validate` cả hai stack
 3. `build-push`: build `linux/amd64` rồi push `auth-service:<git-sha>` lên ECR (bỏ qua nếu tag đã có, khi re-run)
-4. `policy-plan`: plan commit release và liệt kê thay đổi `aws_iam_*`
-5. `policy-approval`: chỉ chạy khi có thay đổi IAM. Chờ reviewer của Environment `production-policy` duyệt.
-   PR review không được tính là approval này. Xem [docs/production-policy-approval.md](../docs/production-policy-approval.md)
-6. `deploy`: plan lại, kiểm tra thay đổi IAM khớp bản đã duyệt, `terraform apply` saved plan, sau đó verify rollout và gọi `/actuator/health/readiness`
+4. `deploy`: `terraform apply -var image_tag=<git-sha>`, sau đó verify rollout và gọi `/actuator/health/readiness`
 
 Với pull request: chạy `test`, `terraform-validate` và `terraform plan` bằng role read-only. Kết quả plan nằm ở job summary.
 
