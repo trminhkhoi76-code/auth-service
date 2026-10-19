@@ -1,19 +1,90 @@
-name: Policy apply example (dry run only)
+name: Release policy approval example (dry run)
 on:
+  pull_request:
+    branches: [main]
+    paths: ['examples/iam/**', '.github/workflows/policy-apply-example.yml']
   push:
     branches: [main]
-    paths: ['examples/iam/policy.json']
+    paths: ['examples/iam/**', '.github/workflows/policy-apply-example.yml']
 permissions:
   contents: read
+concurrency:
+  group: production-policy-example
+  cancel-in-progress: false
 jobs:
-  dry-run:
+  prepare:
+    name: Prepare exact release policy for review
     runs-on: ubuntu-latest
+    outputs:
+      policy_sha256: ${{ steps.policy.outputs.sha256 }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Validate and preview only
+      - name: Validate and publish review summary
+        id: policy
+        shell: bash
         run: |
-          python3 -m json.tool examples/iam/policy.json
-          sha256sum examples/iam/policy.json
-          echo 'DRY RUN: aws iam put-role-policy --role-name EXAMPLE_ROLE --policy-name EXAMPLE_POLICY --policy-document file://examples/iam/policy.json'
+          set -euo pipefail
+          python3 -m json.tool examples/iam/policy.json > /dev/null
+          POLICY_HASH=$(sha256sum examples/iam/policy.json | cut -d ' ' -f 1)
+          echo "sha256=$POLICY_HASH" >> "$GITHUB_OUTPUT"
+          {
+            echo '## Production policy approval — DRY RUN'
+            echo "Release commit: $GITHUB_SHA"
+            echo "Policy SHA256: $POLICY_HASH"
+            echo "[Policy at this commit](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_SHA/examples/iam/policy.json)"
+            echo ''
+            echo 'Review this JSON and the release PR before approving the production-policy environment.'
+            echo 'PR approval does not authorize this deployment. No AWS changes will be made by this example.'
+            echo '```json'
+            cat examples/iam/policy.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Save policy from this exact run
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-policy-${{ github.sha }}
+          path: examples/iam/policy.json
+          retention-days: 14
+          if-no-files-found: error
+  apply-policy:
+    name: Approve then apply production policy (dry run)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: prepare
+    runs-on: ubuntu-latest
+    # Configure required reviewers in repository settings BEFORE enabling this example.
+    # This approval is independent of release PR review and happens before any job step.
+    environment:
+      name: production-policy
+      url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Require explicit environment setup acknowledgement
+        env:
+          CONFIGURED: ${{ vars.PRODUCTION_POLICY_APPROVAL_CONFIGURED }}
+        run: |
+          if [ "$CONFIGURED" != 'true' ]; then
+            echo '::error::Configure production-policy required reviewers, then set PRODUCTION_POLICY_APPROVAL_CONFIGURED=true.'
+            exit 1
+          fi
+      - name: Retrieve reviewed policy from this run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-policy-${{ github.sha }}
+          path: reviewed-policy
+      - name: Verify bytes and preview put-role-policy
+        env:
+          EXPECTED_SHA256: ${{ needs.prepare.outputs.policy_sha256 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s  reviewed-policy/policy.json\n' "$EXPECTED_SHA256" | sha256sum --check --strict
+          echo 'DRY RUN ONLY — production approval received; no AWS call is made.'
+          echo 'aws iam put-role-policy --role-name EXAMPLE_ROLE --policy-name EXAMPLE_POLICY --policy-document file://reviewed-policy/policy.json'
+  terraform-apply:
+    name: Continue release / Terraform apply (dry run)
+    needs: apply-policy
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo 'DRY RUN — the release may continue with terraform apply only after the approved policy job succeeds.'
