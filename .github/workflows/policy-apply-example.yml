@@ -1,0 +1,19 @@
+name: Policy apply example (dry run only)
+on:
+  push:
+    branches: [main]
+    paths: ['examples/iam/policy.json']
+permissions:
+  contents: read
+jobs:
+  dry-run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Validate and preview only
+        run: |
+          python3 -m json.tool examples/iam/policy.json
+          sha256sum examples/iam/policy.json
+          echo 'DRY RUN: aws iam put-role-policy --role-name EXAMPLE_ROLE --policy-name EXAMPLE_POLICY --policy-document file://examples/iam/policy.json'
