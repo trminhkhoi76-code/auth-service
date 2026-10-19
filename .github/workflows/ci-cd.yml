@@ -1,7 +1,9 @@
 name: CI/CD
 
 # pull_request → test + terraform validate + terraform plan (read-only role)
-# push to main → test + validate → build & push image → terraform apply → verify rollout
+# push to main → test + validate → build & push image ┐
+#                                  plan IAM changes ──┴→ [production-policy approval, only if IAM changes]
+#                                                      → terraform apply → verify rollout
 on:
   pull_request:
     branches: [main]
@@ -107,7 +109,7 @@ jobs:
         run: |
           # Plan against the image that is currently deployed so only infrastructure changes show up
           IMAGE_TAG=$(terraform output -raw image_tag 2>/dev/null || echo "not-deployed-yet")
-          terraform plan -input=false -lock=false -no-color \
+          terraform plan -input=false -lock=false -no-color -out=tfplan \
             -var-file="env/${TF_ENV}.tfvars" \
             -var "image_tag=${IMAGE_TAG}" | tee plan.txt
           {
@@ -116,6 +118,10 @@ jobs:
             grep -E '^\s+[#~+-]|^Plan:|^No changes' plan.txt | tail -c 60000
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Tells PR reviewers whether the release will stop for production-policy approval after merge
+      - name: IAM policy changes
+        run: bash ../../.github/scripts/iam-plan-changes.sh tfplan
 
   build-push:
     name: Build & push image
@@ -170,9 +176,110 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  # Plans the release commit so the approver sees exactly which IAM policies the apply will change.
+  # The plan file is not shared: deploy re-plans and must reach the same IAM fingerprint.
+  policy-plan:
+    name: Plan IAM policy changes
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: [test, terraform-validate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      changed: ${{ steps.iam.outputs.changed }}
+      fingerprint: ${{ steps.iam.outputs.fingerprint }}
+    defaults:
+      run:
+        working-directory: infra/app
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::151062089420:role/auth-service-github-action
+          aws-region: ap-northeast-1
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Terraform init
+        run: terraform init -input=false -backend-config="env/${TF_ENV}.s3.tfbackend"
+
+      # Read-only: the state is not written, so the lock is not needed (deploy plans again with the lock)
+      - name: Terraform plan
+        run: |
+          terraform plan -input=false -lock=false -no-color -out=tfplan \
+            -var-file="env/${TF_ENV}.tfvars" \
+            -var "image_tag=${GITHUB_SHA}"
+
+      - name: Detect IAM changes
+        id: iam
+        run: bash ../../.github/scripts/iam-plan-changes.sh tfplan
+
+  # The one approval step before the policy reaches production. It is a GitHub Environment approval,
+  # separate from the release PR review: approving or merging the PR does not satisfy it.
+  # Required reviewers are configured in Settings → Environments → production-policy, not in this file.
+  # No AWS credentials here: an environment changes the OIDC subject the deploy role trusts.
+  policy-approval:
+    name: Approve IAM policy for production
+    if: needs.policy-plan.outputs.changed == 'true'
+    needs: [build-push, policy-plan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production-policy
+    permissions:
+      actions: read
+      pull-requests: read
+    steps:
+      # Declaring `environment:` is not enough: an environment without required reviewers lets this
+      # job start at once. Fail unless someone actually approved production-policy in this run.
+      - name: Confirm a production-policy reviewer approved
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FINGERPRINT: ${{ needs.policy-plan.outputs.fingerprint }}
+        run: |
+          APPROVERS=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/approvals" --jq '
+            [.[] | select(.state == "approved" and any(.environments[]; .name == "production-policy"))
+             | .user.login] | unique | join(", ")')
+          if [[ -z "$APPROVERS" ]]; then
+            echo "::error::Nobody approved production-policy. Add required reviewers in Settings → Environments → production-policy."
+            exit 1
+          fi
+
+          PR=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" --jq '.[0].number // empty')
+          PR_APPROVERS="n/a"
+          if [[ -n "$PR" ]]; then
+            PR_APPROVERS=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/reviews" --jq '
+              [.[] | select(.state == "APPROVED") | .user.login] | unique | join(", ")')
+          fi
+
+          {
+            echo "## production-policy approval"
+            echo ""
+            echo "| Item | Value |"
+            echo "| --- | --- |"
+            echo "| Release commit | \`${GITHUB_SHA}\` |"
+            echo "| Release PR | ${PR:+#${PR}} (approved by: ${PR_APPROVERS:-nobody}) — not counted |"
+            echo "| production-policy approved by | ${APPROVERS} |"
+            echo "| Approved IAM fingerprint | \`${FINGERPRINT}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   deploy:
     name: Deploy (terraform apply)
-    needs: build-push
+    needs: [build-push, policy-plan, policy-approval]
+    # policy-approval is skipped when the release changes no IAM resource
+    if: >-
+      !cancelled()
+      && needs.build-push.result == 'success'
+      && needs.policy-plan.result == 'success'
+      && contains(fromJSON('["success", "skipped"]'), needs.policy-approval.result)
     runs-on: ubuntu-latest
     # The very first apply creates the RDS instance (~10-15 min)
     timeout-minutes: 60
@@ -204,14 +311,36 @@ jobs:
       - name: Terraform init
         run: terraform init -input=false -backend-config="env/${TF_ENV}.s3.tfbackend"
 
-      # The ECS service uses wait_for_steady_state: apply returns once the new tasks are healthy
-      - name: Terraform apply
+      - name: Terraform plan
         env:
           IMAGE_TAG: ${{ needs.build-push.outputs.image_tag }}
         run: |
-          terraform apply -input=false -auto-approve \
+          terraform plan -input=false -no-color -out=tfplan \
             -var-file="env/${TF_ENV}.tfvars" \
             -var "image_tag=${IMAGE_TAG}"
+
+      - name: Detect IAM changes
+        id: iam
+        run: bash ../../.github/scripts/iam-plan-changes.sh tfplan
+
+      # The plan being applied must contain exactly the IAM changes that were approved: this also
+      # catches IAM changes that appeared after policy-plan (drift, or a skipped approval)
+      - name: Require production-policy approval for these IAM changes
+        if: steps.iam.outputs.changed == 'true'
+        env:
+          APPROVAL: ${{ needs.policy-approval.result }}
+          APPROVED_FINGERPRINT: ${{ needs.policy-plan.outputs.fingerprint }}
+          FINGERPRINT: ${{ steps.iam.outputs.fingerprint }}
+        run: |
+          if [[ "$APPROVAL" != "success" || "$FINGERPRINT" != "$APPROVED_FINGERPRINT" ]]; then
+            echo "::error::IAM changes ${FINGERPRINT} were not approved (approval=${APPROVAL}, approved=${APPROVED_FINGERPRINT}). Re-run the workflow to request approval again."
+            exit 1
+          fi
+          echo "IAM changes ${FINGERPRINT} match the production-policy approval."
+
+      # The ECS service uses wait_for_steady_state: apply returns once the new tasks are healthy
+      - name: Terraform apply
+        run: terraform apply -input=false tfplan
 
       # If the circuit breaker rolled back, the previous task definition is PRIMARY again: fail the run
       - name: Verify rollout
