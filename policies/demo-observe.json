@@ -1,13 +1,11 @@
 {
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "ObserveDemo",
-      "Effect": "Allow",
-      "Action": [
-        "sts:GetCallerIdentity"
-      ],
-      "Resource": "*"
-    }
-  ]
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "ObserveDemo",
+            "Effect": "Allow",
+            "Action": ["sts:GetCallerIdentity"],
+            "Resource": "*"
+        }
+    ]
 }
