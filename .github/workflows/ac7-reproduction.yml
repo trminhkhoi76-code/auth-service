@@ -1,0 +1,35 @@
+name: AC7 AWS-free reproduction
+on:
+  pull_request:
+    branches: [main]
+  push:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  model-tests:
+    name: AC7 model tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m unittest discover -s scripts/ac7 -v
+  oidc-probe:
+    name: Real OIDC claims, simulated AWS trust
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure credentials and apply (SIMULATION ONLY)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ac7/reproduce.py
+      - name: Preserve evidence (no token)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ac7-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ac7-evidence/
+          if-no-files-found: warn
