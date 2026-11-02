@@ -12,6 +12,14 @@ class AC7Tests(unittest.TestCase):
         self.assertFalse(trust_matches({'iss': 'untrusted', 'aud': 'sts.amazonaws.com',
             'sub': 'repo:owner/repo:ref:refs/heads/main'}, 'owner/repo'))
 
+    def test_id_bound_subject(self):
+        claims = {'iss': 'https://token.actions.githubusercontent.com', 'aud': 'sts.amazonaws.com',
+                  'sub': 'repo:owner@10/repo@20:ref:refs/heads/main'}
+        self.assertTrue(trust_matches(claims, 'owner/repo', '10', '20'))
+        self.assertFalse(trust_matches(claims, 'owner/repo', '10', '21'))
+        claims['sub'] = 'repo:owner@10/repo@20:ref:refs/heads/feature'
+        self.assertFalse(trust_matches(claims, 'owner/repo', '10', '20'))
+
     def test_approval_matrix(self):
         pr = {'user': {'login': 'author'}, 'head': {'sha': 'latest'}}
         def review(user='owner', state='APPROVED', sha='latest'):

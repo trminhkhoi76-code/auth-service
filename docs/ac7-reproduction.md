@@ -81,3 +81,10 @@ Real AWS acceptance requires later repeating AC9-11 with a real role and STS/Clo
 Fork PRs are out of scope. The workflow intentionally has id-token:write only in the probe job, no environment,
 no AWS action, no AWS secret and no deployment command. Negative tests finish green when denial is expected;
 read trust_result=DENY in the artifact, not just the workflow's success icon.
+
+## Observed subject format in this repository
+The first live probe observed repo:trminhkhoi76-code@292533890/auth-service@1399077826:ref:refs/heads/test/ac7-aws-free-reproduction.
+The matcher therefore accepts exact main subjects in either legacy name-only or ID-bound format.
+IDs come from GitHub runner environment, never from the unverified JWT payload. There are no wildcards.
+For a future real AWS role, inspect its actual main token subject and configure the exact observed value;
+do not blindly copy the name-only AC9 placeholder. This is a documented adjustment to AC9/11.

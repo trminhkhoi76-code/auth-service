@@ -8,10 +8,14 @@ import urllib.parse
 import urllib.request
 
 
-def trust_matches(claims, repo):
+def trust_matches(claims, repo, owner_id=None, repo_id=None):
+    subjects = {f'repo:{repo}:ref:refs/heads/main'}
+    if owner_id and repo_id:
+        owner, name = repo.split('/')
+        subjects.add(f'repo:{owner}@{owner_id}/{name}@{repo_id}:ref:refs/heads/main')
     return (claims.get('iss') == 'https://token.actions.githubusercontent.com'
             and claims.get('aud') == 'sts.amazonaws.com'
-            and claims.get('sub') == f'repo:{repo}:ref:refs/heads/main')
+            and claims.get('sub') in subjects)
 
 
 def request_json(url, token):
@@ -43,7 +47,8 @@ def main():
     # Token never printed or persisted. Only selected claims are retained.
     payload = jwt.split('.')[1]
     claims = json.loads(base64.urlsafe_b64decode(payload + '=' * (-len(payload) % 4)))
-    allowed = trust_matches(claims, repo)
+    allowed = trust_matches(claims, repo, os.environ.get('GITHUB_REPOSITORY_OWNER_ID'),
+                            os.environ.get('GITHUB_REPOSITORY_ID'))
     evidence = {'simulation': True, 'signature_verified_by_this_script': False,
                 'aws_called': False, 'repository': repo, 'sha': os.environ['GITHUB_SHA'],
                 'event': os.environ['GITHUB_EVENT_NAME'],
