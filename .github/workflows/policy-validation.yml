@@ -1,0 +1,63 @@
+name: "Policy validation - real repository checks"
+
+# The branch ruleset requires a check named exactly "Policy validation".
+# This checks tracked Terraform and ownership configuration, NOT AWS IAM authorization.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  policy-check:
+    name: Policy validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.14.8"
+
+      - name: Check Terraform formatting
+        run: terraform fmt -check -recursive -diff infra
+
+      - name: Validate Terraform modules without backend or AWS calls
+        run: |
+          for dir in infra/bootstrap infra/app; do
+            terraform -chdir="$dir" init -backend=false -input=false
+            terraform -chdir="$dir" validate
+          done
+
+      - name: Verify live and simulation boundaries
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          owners = Path(".github/CODEOWNERS").read_text()
+          for prefix in ("/.github/", "/infra/", "/verification/"):
+              if not any(line.startswith(prefix + " ") for line in owners.splitlines()):
+                  raise SystemExit("Missing CODEOWNERS rule: " + prefix)
+          for name in ("ac7-reproduction.yml", "policy-gate-demo.yml"):
+              contents = Path(".github/workflows", name).read_text()
+              if "workflow_dispatch:" not in contents:
+                  raise SystemExit("Simulation workflow not manually dispatchable: " + name)
+              for forbidden in ("  push:", "  pull_request:", "  pull_request_target:"):
+                  if forbidden in contents:
+                      raise SystemExit("Simulation workflow must be manual: " + name)
+          print("Repository boundaries verified (no claim about live AWS permissions).")
+          PY
+
+      - name: Scope of this required check
+        run: |
+          {
+            echo "## Policy validation (repository-side)"
+            echo "Checks: Terraform format/validate, CODEOWNERS presence, manual-only simulations."
+            echo "Does not prove AWS role trust, effective IAM permissions, or approval enforcement."
+          } >> "$GITHUB_STEP_SUMMARY"

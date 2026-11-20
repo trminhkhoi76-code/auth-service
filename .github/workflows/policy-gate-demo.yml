@@ -1,81 +1,45 @@
-name: Policy gate demo
+name: "VERIFY ONLY - Policy gate simulation"
 
+# This workflow does not authorize, assume or write an AWS IAM role.
+# It deliberately does NOT run on PRs, pushes or merges.
 on:
-  pull_request:
-    branches: [main]
-  push:
-    branches: [main]
-    paths:
-      - 'policies/**'
-      - '.github/workflows/policy-gate-demo.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  policy-check:
-    name: Policy validation
+  simulation:
+    name: "SIMULATION - Validate policy fixture"
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Detect policy changes
-        env:
-          EVENT: ${{ github.event_name }}
-          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Validate a deliberately narrow demo fixture
         run: |
           python3 - <<'PY'
-          import os, subprocess
+          import hashlib
+          import json
+          import os
           from pathlib import Path
-          base, head = os.environ["BASE"], os.environ["HEAD"]
-          if base and set(base) != {"0"}:
-              paths = subprocess.check_output(["git", "diff", "--name-only", base, head, "--", "policies/"], text=True).splitlines()
-          else:
-              paths = [str(p) for p in Path("policies").glob("*.json")]
-          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
-              f.write("## Policy demo: detect\n")
-              f.write("\n".join("- " + p for p in paths) or "No policy changes.")
-              f.write("\n")
-          print("Detected policy changes:", paths)
-          PY
-      - name: Validate demo policy and show apply command
-        run: |
-          python3 - <<'PY'
-          import hashlib, json, os
-          from pathlib import Path
-          path = Path("policies/demo-observe.json")
+          path = Path("verification/policy-gate/demo-observe.json")
           raw = path.read_bytes()
           policy = json.loads(raw)
-          # Deliberately narrow demo guardrail, not a general IAM policy analyzer.
-          assert policy["Version"] == "2012-10-17"
-          assert policy["Statement"] == [{
-              "Sid": "ObserveDemo",
-              "Effect": "Allow",
-              "Action": ["sts:GetCallerIdentity"],
-              "Resource": "*"
-          }], "Demo policy must only allow sts:GetCallerIdentity"
-          command = "aws iam put-role-policy --role-name auth-service-policy-demo --policy-name observe-demo --policy-document file://policies/demo-observe.json"
-          print("VALIDATED sha256=" + hashlib.sha256(raw).hexdigest())
-          print("DRY RUN ONLY: " + command)
-          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
-              f.write("## Validate → simulated apply\n")
-              f.write("Policy is limited to sts:GetCallerIdentity. No AWS credentials are requested.\n\n")
-              f.write("`" + command + "`\n\n")
-              f.write("**DRY RUN: no AWS API call was made.**\n")
+          expected = {
+              "Version": "2012-10-17",
+              "Statement": [{
+                  "Sid": "ObserveDemo",
+                  "Effect": "Allow",
+                  "Action": ["sts:GetCallerIdentity"],
+                  "Resource": "*",
+              }],
+          }
+          if policy != expected:
+              raise SystemExit("Invalid demonstration fixture")
+          digest = hashlib.sha256(raw).hexdigest()
+          print(f"SIMULATION ONLY. Fixture sha256={digest}. No AWS API call.")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as out:
+              out.write("## Verification only — policy gate demo\n\n")
+              out.write(f"Fixture SHA-256: \`{digest}\`\n\n")
+              out.write("No AWS credentials, IAM calls, or apply operation.\n")
           PY
-  apply-preview:
-    name: Apply preview after merge
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: policy-check
-    runs-on: ubuntu-latest
-    steps:
-      - name: Observe post-merge boundary
-        run: |
-          echo "Reached main after merge; CODEOWNERS review must be enforced by an active ruleset."
-          echo "Dry-run demonstration only; put-role-policy was not executed."
-          echo "## Post-merge apply boundary (simulation)" >> "$GITHUB_STEP_SUMMARY"
-          echo "This job runs only on push to main. No IAM policy was changed." >> "$GITHUB_STEP_SUMMARY"
