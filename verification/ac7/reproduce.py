@@ -93,7 +93,7 @@ def main():
                              'commit_id': r['commit_id'], 'url': r['html_url']} for r in approvals]
     evidence['pr'] = pr['html_url']
     evidence['policy_sha256'] = hashlib.sha256(Path('verification/policy-gate/demo-observe.json').read_bytes()).hexdigest()
-    evidence['simulated_command'] = 'aws iam put-role-policy --role-name AC7DemoTarget --policy-name observe-demo --policy-document file://policies/demo-observe.json'
+    evidence['simulated_command'] = 'aws iam put-role-policy --role-name AC7DemoTarget --policy-name observe-demo --policy-document file://verification/policy-gate/demo-observe.json'
     Path('ac7-evidence/mock-apply.json').write_text(json.dumps(evidence, indent=2))
     print('SIMULATED put-role-policy: recorded approval and policy hash; no AWS write.')
 
