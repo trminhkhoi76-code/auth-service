@@ -1,4 +1,10 @@
+# Owners of deployment behavior and security-sensitive source.
 /.github/ @trminhkhoi76-code @lamduthach
-/policies/ @trminhkhoi76-code @lamduthach
 /infra/ @trminhkhoi76-code @lamduthach
-/scripts/ac7/ @trminhkhoi76-code @lamduthach
+/src/main/ @trminhkhoi76-code @lamduthach
+
+# Reproductions and fixtures are NOT live IAM policies.
+/verification/ @trminhkhoi76-code @lamduthach
+
+# Retain this historical path rule while old demonstration PRs are open.
+/policies/ @trminhkhoi76-code @lamduthach

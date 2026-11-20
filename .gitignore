@@ -42,3 +42,15 @@ build/
 *.tfstate.*
 *.tfplan
 crash.log
+
+# Python verification outputs and local evidence
+__pycache__/
+*.py[cod]
+.pytest_cache/
+ac7-evidence/
+verification/**/evidence/
+verification/**/artifacts/
+
+# Local output
+*.log
+.DS_Store

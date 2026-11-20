@@ -1,5 +1,10 @@
 # auth-service — hạ tầng AWS (Terraform)
 
+> **TRẠNG THÁI:** Đây là cấu hình Terraform thực tế dành cho môi trường `dev`, không phải bản ghi đã xác minh AWS. Việc merge lên `main` có thể kích hoạt `terraform apply`. Khu vực mô phỏng được tách riêng ở [verification](../verification/README.md).
+>
+> **Cần xử lý trước khi tin tưởng luồng quyền:** `infra/bootstrap/main.tf` tạo role `auth-service-github-plan` và `auth-service-github-deploy`, nhưng `.github/workflows/ci-cd.yml` đang assume `auth-service-github-action` cho cả plan lẫn deploy. Chưa xác minh role thực tế trên AWS. Ngoài ra, `infra/bootstrap/terraform.tfvars` vẫn chứa placeholder `<owner>/auth-service`. Không tự apply/bootstrap trước khi xác minh trạng thái và quyền của AWS.
+
+
 ```
 infra/
 ├── bootstrap/   # chạy 1 lần, local, bằng quyền admin — state local
@@ -67,7 +72,7 @@ Push hoặc merge vào `main` sẽ chạy `.github/workflows/ci-cd.yml`:
 3. `build-push`: build `linux/amd64` rồi push `auth-service:<git-sha>` lên ECR (bỏ qua nếu tag đã có, khi re-run)
 4. `deploy`: `terraform apply -var image_tag=<git-sha>`, sau đó verify rollout và gọi `/actuator/health/readiness`
 
-Với pull request: chạy `test`, `terraform-validate` và `terraform plan` bằng role read-only. Kết quả plan nằm ở job summary.
+Với pull request: chạy `test`, `terraform-validate` và `terraform plan`. **Chưa thể xác nhận plan dùng role read-only** vì workflow đang tham chiếu role khác với `github_plan` trong bootstrap. Kết quả plan nằm ở job summary khi job chạy thành công.
 
 Lần apply đầu tiên tạo RDS nên mất khoảng 10–15 phút.
 
@@ -95,3 +100,9 @@ terraform plan -var-file=env/dev.tfvars -var "image_tag=$(terraform output -raw 
 Khoảng **$50–60/tháng**: ALB (~$18) · RDS `db.t4g.micro` + 20 GB gp3 (~$20) ·
 Fargate 0.5 vCPU / 1 GB trên Spot (~$6, On-Demand ~$18) · public IPv4 cho ALB và task (~$11).
 Các biến chính ảnh hưởng chi phí: `task_cpu`, `task_memory`, `use_fargate_spot`, `db_instance_class`, `db_multi_az`.
+
+## Phân biệt môi trường và bằng chứng
+
+- `dev`: có cấu hình Terraform và workflow deploy thực sự, nhưng tình trạng tài nguyên AWS chưa được xác minh trong lần rà soát này.
+- `prod`: chưa có cấu hình môi trường và workflow deploy riêng trong repo; không được đánh dấu là đã triển khai.
+- `verification/`: test/demo mô phỏng, không phải AWS apply. Các check bắt buộc chỉ xác minh cấu hình repository; không thay thế xét duyệt IAM thực tế.
